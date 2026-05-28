@@ -6,7 +6,7 @@ pub async fn run_log_parser(mut rx: Receiver<String>) {
     let start_time = Instant::now();
     let mut total_processed = 0;
     let mut error_count = 0;
-
+    let mut total_latency: u64 = 0;
 
     while let Some(line) = rx.recv().await {
         if line.contains("Status: 403") || line.contains("Status: 500") || line.contains("Status: 504") {
@@ -15,6 +15,17 @@ pub async fn run_log_parser(mut rx: Receiver<String>) {
                 if let Some((pure_ray_id, _)) = ray_id.split_once(" ") {
                     println!("Error found in Ray id: {}\n{}", pure_ray_id, line);
                 }                
+            }
+        }
+
+        if let Some((_, duration_part)) = line.split_once("Latency: ") {
+            if let Some((latency_str, _)) = duration_part.split_once("ms") {
+                if let Ok(latency_num) = latency_str.parse::<u32>() {
+                    total_latency += latency_num as u64;
+                    if latency_num > 100 {
+                        println!("[Spike-Warning] {}", line);
+                    }
+                }
             }
         }
 
@@ -31,8 +42,14 @@ pub async fn run_log_parser(mut rx: Receiver<String>) {
     }
 
     let total_elapsed = start_time.elapsed().as_secs_f64();
+    let avg_latency = match total_processed {
+        0 => 0.0,
+        _ => total_latency as f64 / total_processed as f64
+    };
+
     println!("=== Final Parser Report ===");
     println!("Total Lines Processed : {}", total_processed);
     println!("Total Server Errors     : {}", error_count);
     println!("Total Execution Time    : {:.4}s", total_elapsed);
+    println!("Evg latency             : {:.4}ms", avg_latency);
 }

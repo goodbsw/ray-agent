@@ -1,18 +1,19 @@
 use tokio::sync::mpsc::Receiver;
 use tokio::time::Instant;
-
 use crate::metric::SharedMetrics;
 
 pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetrics) {
     println!("📡 [Consumer] Log parser task initialized.");
 
     let start_time = Instant::now();
+    
+    // Thread-local variables for ultra-fast arithmetic processing without lock contention
     let mut total_processed = 0;
     let mut error_count = 0;
     let mut total_latency: u64 = 0;
 
     while let Some(line) = rx.recv().await {
-        // [Task 1] 에러 로그 감지 및 Ray ID 추출
+        // [Task 1] Detect server-side errors and extract tracing Ray IDs
         if line.contains("Status: 403") || line.contains("Status: 500") || line.contains("Status: 504") {
             error_count += 1;
             if let Some((_, ray_id)) = line.split_once("CF-RayID: ") {
@@ -22,7 +23,7 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
             }
         }
 
-        // [Task 2] 레이턴시 추출 및 누적 연산
+        // [Task 2] Extract latency indicators and trigger alerts for spikes
         if let Some((_, duration_part)) = line.split_once("Latency: ") {
             if let Some((latency_str, _)) = duration_part.split_once("ms") {
                 if let Ok(latency_num) = latency_str.parse::<u32>() {
@@ -36,7 +37,7 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
 
         total_processed += 1;
 
-        // 20만 줄마다 인터벌 메트릭 출력
+        // Periodic batch synchronization (every 200k lines) to update the shared memory state
         if total_processed % 200_000 == 0 {
             let elapsed = start_time.elapsed().as_secs_f64();
             let lps = total_processed as f64 / elapsed;
@@ -44,7 +45,9 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
                 "📊 [Metrics] Processed: {} lines | Errors: {} | Throughput: {:.2} lines/sec",
                 total_processed, error_count, lps
             );
-           {
+
+            // Open temporary scope to minimize Mutex guard lifetime (Early Drop)
+            {
                 let mut data = parser_metric.lock().unwrap();
                 data.total_latency = total_latency;
                 data.error_count = error_count;
@@ -53,6 +56,9 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
         }
     }
 
+    let total_elapsed = start_time.elapsed().as_secs_f64();
+    
+    // Final state synchronization upon channel closing
     {
         let mut data = parser_metric.lock().unwrap();
         data.total_latency = total_latency;
@@ -60,9 +66,7 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
         data.total_processed = total_processed;
     }
 
-    let total_elapsed = start_time.elapsed().as_secs_f64();
-    
-    // 🛡️ Zero-division 방벽 (match 표현식)
+    // Capture the final snapshot for local CLI reporting
     let data = parser_metric.lock().unwrap();
     let avg_latency = match data.total_processed {
         0 => 0.0,
@@ -75,15 +79,12 @@ pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetri
     println!("Total Execution Time    : {:.4}s", total_elapsed);
     println!("Avg Latency             : {:.4}ms", avg_latency);
 
-    // -------------------------------------------------------------
-    // 🔥 Phase 4 핵심: 프로메테우스 텍스트 포맷 출력
-    // -------------------------------------------------------------
     println!("\n=== 🎯 Prometheus Exposition Format ===");
     let prometheus_string = format_prometheus_metrics(data.total_processed, data.error_count, avg_latency);
     println!("{}", prometheus_string);
 }
 
-// 💡 원시 문자열 리터럴 r#""# 을 활용한 프로메테우스 규격 포맷터 함수
+// Formatter mapping state data into Prometheus standard exposition exposition string format
 fn format_prometheus_metrics(total: u64, errors: u64, avg_latency: f64) -> String {
     format!(
 r#"# HELP log_lines_total Total number of processed log lines.

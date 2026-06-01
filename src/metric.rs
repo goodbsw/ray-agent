@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 pub struct LogMetrics {
-    total_processed: u64,
-    error_count: u64,
-    total_latency: u64
+    pub total_processed: u64,
+    pub error_count: u64,
+    pub total_latency: u64
 }
 
 impl LogMetrics {

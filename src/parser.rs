@@ -1,7 +1,9 @@
 use tokio::sync::mpsc::Receiver;
 use tokio::time::Instant;
 
-pub async fn run_log_parser(mut rx: Receiver<String>) {
+use crate::metric::SharedMetrics;
+
+pub async fn run_log_parser(mut rx: Receiver<String>, parser_metric: SharedMetrics) {
     println!("📡 [Consumer] Log parser task initialized.");
 
     let start_time = Instant::now();
@@ -42,20 +44,34 @@ pub async fn run_log_parser(mut rx: Receiver<String>) {
                 "📊 [Metrics] Processed: {} lines | Errors: {} | Throughput: {:.2} lines/sec",
                 total_processed, error_count, lps
             );
+           {
+                let mut data = parser_metric.lock().unwrap();
+                data.total_latency = total_latency;
+                data.error_count = error_count;
+                data.total_processed = total_processed;
+            } 
         }
+    }
+
+    {
+        let mut data = parser_metric.lock().unwrap();
+        data.total_latency = total_latency;
+        data.error_count = error_count;
+        data.total_processed = total_processed;
     }
 
     let total_elapsed = start_time.elapsed().as_secs_f64();
     
     // 🛡️ Zero-division 방벽 (match 표현식)
-    let avg_latency = match total_processed {
+    let data = parser_metric.lock().unwrap();
+    let avg_latency = match data.total_processed {
         0 => 0.0,
-        _ => total_latency as f64 / total_processed as f64,
+        _ => data.total_latency as f64 / data.total_processed as f64,
     };
 
     println!("=== Final Parser Report ===");
-    println!("Total Lines Processed : {}", total_processed);
-    println!("Total Server Errors     : {}", error_count);
+    println!("Total Lines Processed : {}", data.total_processed);
+    println!("Total Server Errors     : {}", data.error_count);
     println!("Total Execution Time    : {:.4}s", total_elapsed);
     println!("Avg Latency             : {:.4}ms", avg_latency);
 
@@ -63,7 +79,7 @@ pub async fn run_log_parser(mut rx: Receiver<String>) {
     // 🔥 Phase 4 핵심: 프로메테우스 텍스트 포맷 출력
     // -------------------------------------------------------------
     println!("\n=== 🎯 Prometheus Exposition Format ===");
-    let prometheus_string = format_prometheus_metrics(total_processed, error_count, avg_latency);
+    let prometheus_string = format_prometheus_metrics(data.total_processed, data.error_count, avg_latency);
     println!("{}", prometheus_string);
 }
 
